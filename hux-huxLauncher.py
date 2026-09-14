@@ -6,7 +6,9 @@ import ctypes
 import time
 import requests
 import webbrowser
-from tkinter import messagebox
+import logging
+import json
+from tkinter import messagebox, filedialog
 from threading import Thread
 from PIL import Image, ImageTk
 import re
@@ -15,7 +17,18 @@ import tempfile
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-CURRENT_VERSION = "1.0.7.742"
+CURRENT_VERSION = "1.0.8"
+
+CREATE_NEW_CONSOLE = 0x00000010
+
+def get_log_path():
+    try:
+        return os.path.join(get_app_path(), "hux-launcher.log")
+    except Exception:
+        return os.path.join(tempfile.gettempdir(), "hux-launcher.log")
+
+logger = logging.getLogger("hux-huxLauncher")
+logger.setLevel(logging.INFO)
 GITHUB_REPO = "ky4ka-boroxla/hux-huxLauncher"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
@@ -27,7 +40,6 @@ def get_app_path():
             exe_path = sys.argv[0]
             if '~' in exe_path:
                 try:
-                    import ctypes
                     buffer = ctypes.create_unicode_buffer(260)
                     ret = ctypes.windll.kernel32.GetLongPathNameW(exe_path, buffer, 260)
                     if ret:
@@ -43,6 +55,81 @@ def get_base_path():
 
 APP_PATH = get_app_path()
 BASE_PATH = get_base_path()
+BUILTIN_ZAPRET_DIR = os.path.join(BASE_PATH, "zapret")
+SETTINGS_PATH = os.path.join(APP_PATH, "hux-launcher-settings.json")
+
+CUSTOM_FONT_PATH = os.path.join(BASE_PATH, "fnt_dotumche.ttf")
+CUSTOM_FONT_FAMILY = None
+
+FR_PRIVATE = 0x10
+FR_NOT_ENUM = 0x20
+
+def load_custom_font():
+    global CUSTOM_FONT_FAMILY
+    if not os.path.exists(CUSTOM_FONT_PATH):
+        return None
+    try:
+        ctypes.windll.gdi32.AddFontResourceExW(ctypes.c_wchar_p(CUSTOM_FONT_PATH), FR_PRIVATE, 0)
+    except Exception:
+        logger.exception("Ошибка регистрации шрифта %s", CUSTOM_FONT_PATH)
+    try:
+        from PIL import ImageFont
+        family, _ = ImageFont.truetype(CUSTOM_FONT_PATH, 12).getname()
+        CUSTOM_FONT_FAMILY = family
+    except Exception:
+        logger.exception("Не удалось определить имя шрифта %s", CUSTOM_FONT_PATH)
+        CUSTOM_FONT_FAMILY = None
+    return CUSTOM_FONT_FAMILY
+
+load_custom_font()
+
+def app_font(size=13, weight="normal"):
+    if CUSTOM_FONT_FAMILY:
+        return ctk.CTkFont(family=CUSTOM_FONT_FAMILY, size=size, weight=weight)
+    return ctk.CTkFont(size=size, weight=weight)
+
+def load_settings():
+    try:
+        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_settings(settings):
+    try:
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Ошибка сохранения настроек")
+
+def resolve_zapret_dir(settings):
+    if settings.get("zapret_mode") == "custom":
+        custom_path = settings.get("zapret_custom_path", "")
+        if custom_path and os.path.isdir(custom_path):
+            return custom_path
+    return BUILTIN_ZAPRET_DIR
+
+def unstage_zapret_files(zapret_dir):
+    if not os.path.isdir(zapret_dir):
+        return
+    try:
+        for root, dirs, files in os.walk(zapret_dir):
+            for f in files:
+                if f.endswith(".dat"):
+                    original_name = f[:-4]
+                    src = os.path.join(root, f)
+                    dst = os.path.join(root, original_name)
+                    if not os.path.exists(dst):
+                        os.rename(src, dst)
+    except Exception:
+        logger.exception("Ошибка восстановления файлов zapret из .dat")
+
+try:
+    _log_handler = logging.FileHandler(os.path.join(APP_PATH, "hux-launcher.log"), encoding="utf-8")
+    _log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(_log_handler)
+except Exception:
+    pass
 
 LANG = {
     "ru": {
@@ -96,7 +183,13 @@ LANG = {
             ("9", "Проверить обновления"),
             ("10", "Диагностика"),
             ("11", "Тесты")
-        ]
+        ],
+        "zapret_source_title": "Zapret",
+        "zapret_source_heading": "Источник zapret",
+        "zapret_source_current": "Сейчас: {}",
+        "zapret_source_builtin": "Встроенный (из exe)",
+        "zapret_source_custom": "Своя папка...",
+        "zapret_source_pick_folder": "Выбери папку zapret"
     },
     "en": {
         "title": "HUX-HUX LAUNCHER",
@@ -149,7 +242,13 @@ LANG = {
             ("9", "Check updates"),
             ("10", "Diagnostics"),
             ("11", "Run Tests")
-        ]
+        ],
+        "zapret_source_title": "Zapret",
+        "zapret_source_heading": "Zapret source",
+        "zapret_source_current": "Current: {}",
+        "zapret_source_builtin": "Built-in (from exe)",
+        "zapret_source_custom": "Custom folder...",
+        "zapret_source_pick_folder": "Pick zapret folder"
     },
     "uk": {
         "title": "HUX-HUX LAUNCHER",
@@ -202,7 +301,13 @@ LANG = {
             ("9", "Перевірити оновлення"),
             ("10", "Діагностика"),
             ("11", "Тести")
-        ]
+        ],
+        "zapret_source_title": "Zapret",
+        "zapret_source_heading": "Джерело zapret",
+        "zapret_source_current": "Зараз: {}",
+        "zapret_source_builtin": "Вбудований (з exe)",
+        "zapret_source_custom": "Своя папка...",
+        "zapret_source_pick_folder": "Обери папку zapret"
     },
     "be": {
         "title": "HUX-HUX LAUNCHER",
@@ -255,7 +360,13 @@ LANG = {
             ("9", "Праверыць абнаўленні"),
             ("10", "Дыягностыка"),
             ("11", "Тэсты")
-        ]
+        ],
+        "zapret_source_title": "Zapret",
+        "zapret_source_heading": "Крыніца zapret",
+        "zapret_source_current": "Зараз: {}",
+        "zapret_source_builtin": "Убудаваны (з exe)",
+        "zapret_source_custom": "Свая папка...",
+        "zapret_source_pick_folder": "Абяры папку zapret"
     },
     "brat": {
         "title": "HUX-HUX LAUNCHER",
@@ -308,7 +419,13 @@ LANG = {
             ("9", "Проверить обновы"),
             ("10", "Диагностика"),
             ("11", "Тесты")
-        ]
+        ],
+        "zapret_source_title": "Zapret",
+        "zapret_source_heading": "Откуда запрет, братан",
+        "zapret_source_current": "Щас: {}",
+        "zapret_source_builtin": "Зашитый (из exe)",
+        "zapret_source_custom": "Своя папка, братиш...",
+        "zapret_source_pick_folder": "Выбери папку с запретом"
     }
 }
 
@@ -331,7 +448,7 @@ class SplashScreen(ctk.CTkToplevel):
             icon_path = os.path.join(BASE_PATH, "icon.ico")
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
-        except:
+        except Exception:
             pass
 
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -341,10 +458,10 @@ class SplashScreen(ctk.CTkToplevel):
         self.top_frame.pack(fill="x", pady=(30, 0))
         self.top_frame.pack_propagate(False)
 
-        self.title_label = ctk.CTkLabel(self.top_frame, text=self.text["title"], font=ctk.CTkFont(size=32, weight="bold"), text_color="#00d4ff")
+        self.title_label = ctk.CTkLabel(self.top_frame, text=self.text["title"], font=app_font(size=32, weight="bold"), text_color="#00d4ff")
         self.title_label.pack(pady=(10, 0))
 
-        self.version_label = ctk.CTkLabel(self.top_frame, text=f"{self.text['version']} {CURRENT_VERSION}", font=ctk.CTkFont(size=13), text_color=("black", "white"))
+        self.version_label = ctk.CTkLabel(self.top_frame, text=f"{self.text['version']} {CURRENT_VERSION}", font=app_font(size=13), text_color=("black", "white"))
         self.version_label.pack()
 
         self.center_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -358,13 +475,13 @@ class SplashScreen(ctk.CTkToplevel):
         if os.path.exists(gif_path):
             self.load_gif(gif_path)
         else:
-            self.gif_label.configure(text="", font=ctk.CTkFont(size=80))
+            self.gif_label.configure(text="", font=app_font(size=80))
 
         self.bottom_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent", height=100)
         self.bottom_frame.pack(fill="x", pady=(0, 30))
         self.bottom_frame.pack_propagate(False)
 
-        self.status_label = ctk.CTkLabel(self.bottom_frame, text=self.text["loading"], font=ctk.CTkFont(size=13), text_color=("black", "white"))
+        self.status_label = ctk.CTkLabel(self.bottom_frame, text=self.text["loading"], font=app_font(size=13), text_color=("black", "white"))
         self.status_label.pack(pady=(0, 8))
 
         self.progress = ctk.CTkProgressBar(self.bottom_frame, width=320, height=6, corner_radius=3, fg_color="#2d3748", progress_color="#00d4ff")
@@ -395,8 +512,8 @@ class SplashScreen(ctk.CTkToplevel):
                 self.gif_label.configure(image=self.gif_frames[0])
                 self.current_gif_frame = 0
         except Exception as e:
-            print(f"GIF loading error: {e}")
-            self.gif_label.configure(text="", font=ctk.CTkFont(size=80))
+            logger.exception("Ошибка загрузки GIF")
+            self.gif_label.configure(text="", font=app_font(size=80))
 
     def animate_gif(self):
         if hasattr(self, 'gif_frames') and self.gif_frames:
@@ -446,13 +563,13 @@ class HelpWindow(ctk.CTkToplevel):
             icon_path = os.path.join(BASE_PATH, "icon.ico")
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
-        except:
+        except Exception:
             pass
 
-        self.title_label = ctk.CTkLabel(self, text=self.text["where_to_click"], font=ctk.CTkFont(size=24, weight="bold"), text_color="#00d4ff")
+        self.title_label = ctk.CTkLabel(self, text=self.text["where_to_click"], font=app_font(size=24, weight="bold"), text_color="#00d4ff")
         self.title_label.pack(pady=(15, 5))
 
-        self.info_label = ctk.CTkLabel(self, text=self.text["doc_instruction"], font=ctk.CTkFont(size=14), text_color=("black", "white"))
+        self.info_label = ctk.CTkLabel(self, text=self.text["doc_instruction"], font=app_font(size=14), text_color=("black", "white"))
         self.info_label.pack(pady=(0, 10))
 
         frame = ctk.CTkFrame(self, fg_color=("#1a1a2e", "#16213e"), corner_radius=10, border_width=1, border_color="#00d4ff")
@@ -461,13 +578,13 @@ class HelpWindow(ctk.CTkToplevel):
         for i, (num, desc) in enumerate(self.text["doc_items"]):
             row = i // 2
             col = i % 2
-            label = ctk.CTkLabel(frame, text=f"{num} -> {desc}", font=ctk.CTkFont(size=13), text_color=("black", "white"))
+            label = ctk.CTkLabel(frame, text=f"{num} -> {desc}", font=app_font(size=13), text_color=("black", "white"))
             label.grid(row=row, column=col, padx=10, pady=3, sticky="w")
 
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_columnconfigure(1, weight=1)
 
-        self.close_btn = ctk.CTkButton(self, text=self.text["doc_close"], command=self.destroy, font=ctk.CTkFont(size=14, weight="bold"), height=40, corner_radius=10, fg_color="#00b894", hover_color="#00a381")
+        self.close_btn = ctk.CTkButton(self, text=self.text["doc_close"], command=self.destroy, font=app_font(size=14, weight="bold"), height=40, corner_radius=10, fg_color="#00b894", hover_color="#00a381")
         self.close_btn.pack(pady=(15, 15), padx=40, fill="x")
 
 class HuxHuxLauncher(ctk.CTk):
@@ -485,7 +602,7 @@ class HuxHuxLauncher(ctk.CTk):
             icon_path = os.path.join(BASE_PATH, "icon.ico")
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
-        except:
+        except Exception:
             pass
 
         self.strategies = []
@@ -493,7 +610,9 @@ class HuxHuxLauncher(ctk.CTk):
         self.latest_version = ""
         self.download_url = ""
         self.update_state = None
-        self.empty_clicks = 0  # Счётчик кликов по пустому списку
+        self.settings = load_settings()
+        self.zapret_dir = resolve_zapret_dir(self.settings)
+        unstage_zapret_files(self.zapret_dir)
 
         self.top_controls = ctk.CTkFrame(self, fg_color="transparent", height=50)
         self.top_controls.pack(pady=(10, 0), padx=20, fill="x")
@@ -502,14 +621,14 @@ class HuxHuxLauncher(ctk.CTk):
         self.lang_frame = ctk.CTkFrame(self.top_controls, fg_color="transparent")
         self.lang_frame.pack(side="right", padx=5)
 
-        self.lang_label = ctk.CTkLabel(self.lang_frame, text="🌐", font=ctk.CTkFont(size=14))
+        self.lang_label = ctk.CTkLabel(self.lang_frame, text="🌐", font=app_font(size=14))
         self.lang_label.pack(side="left", padx=(0, 5))
 
         self.lang_switch = ctk.CTkOptionMenu(
             self.lang_frame,
             values=["RU", "EN", "UA", "BE", "BRAT"],
             command=self.change_lang,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=app_font(size=12, weight="bold"),
             fg_color="#2d3748",
             button_color="#00d4ff",
             button_hover_color="#0077b6",
@@ -519,83 +638,67 @@ class HuxHuxLauncher(ctk.CTk):
         self.lang_switch.pack(side="left")
         self.lang_switch.set("RU")
 
+        self.zapret_source_btn = ctk.CTkButton(
+            self.top_controls,
+            text="📁",
+            width=36,
+            height=30,
+            font=app_font(size=14),
+            fg_color="#2d3748",
+            hover_color="#4a5568",
+            command=self.open_zapret_source_dialog,
+        )
+        self.zapret_source_btn.pack(side="left", padx=(5, 0))
+
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.header_frame.pack(pady=(5, 5), fill="x")
-        self.title_label = ctk.CTkLabel(self.header_frame, text=self.text["title"], font=ctk.CTkFont(size=30, weight="bold"), text_color="#00d4ff")
+        self.title_label = ctk.CTkLabel(self.header_frame, text=self.text["title"], font=app_font(size=30, weight="bold"), text_color="#00d4ff")
         self.title_label.pack()
-        self.version_label = ctk.CTkLabel(self.header_frame, text=f"{self.text['version']} {CURRENT_VERSION} | {self.text['strategies']}", font=ctk.CTkFont(size=12), text_color=("black", "white"))
+        self.version_label = ctk.CTkLabel(self.header_frame, text=f"{self.text['version']} {CURRENT_VERSION} | {self.text['strategies']}", font=app_font(size=12), text_color=("black", "white"))
         self.version_label.pack(pady=(0, 5))
 
         self.update_frame = ctk.CTkFrame(self, fg_color=("#1a1a2e", "#16213e"), corner_radius=10, border_width=1, border_color="#f39c12")
         self.update_frame.pack(pady=5, padx=25, fill="x")
-        self.update_label = ctk.CTkLabel(self.update_frame, text=self.text["update_check"], font=ctk.CTkFont(size=12), text_color=("black", "white"))
+        self.update_label = ctk.CTkLabel(self.update_frame, text=self.text["update_check"], font=app_font(size=12), text_color=("black", "white"))
         self.update_label.pack(pady=5)
-        self.update_btn = ctk.CTkButton(self.update_frame, text=self.text["check_updates"], command=self.check_updates, font=ctk.CTkFont(size=12, weight="bold"), height=30, corner_radius=8, fg_color="#2d3748", hover_color="#4a5568")
+        self.update_btn = ctk.CTkButton(self.update_frame, text=self.text["check_updates"], command=self.check_updates, font=app_font(size=12, weight="bold"), height=30, corner_radius=8, fg_color="#2d3748", hover_color="#4a5568")
         self.update_btn.pack(pady=(0, 5))
 
         self.status_frame = ctk.CTkFrame(self, fg_color=("#1a1a2e", "#16213e"), corner_radius=12, border_width=1, border_color="#00d4ff")
         self.status_frame.pack(pady=5, padx=25, fill="x")
-        self.status_label = ctk.CTkLabel(self.status_frame, text=self.text["status_not_installed"], font=ctk.CTkFont(size=14, weight="bold"), text_color=("black", "white"))
+        self.status_label = ctk.CTkLabel(self.status_frame, text=self.text["status_not_installed"], font=app_font(size=14, weight="bold"), text_color=("black", "white"))
         self.status_label.pack(pady=8)
 
         self.list_frame = ctk.CTkFrame(self, fg_color=("#1a1a2e", "#16213e"), corner_radius=15, border_width=2, border_color="#00d4ff")
         self.list_frame.pack(pady=10, padx=25, fill="both", expand=True)
-        self.list_label = ctk.CTkLabel(self.list_frame, text=self.text["strategies"], font=ctk.CTkFont(size=14, weight="bold"), text_color=("black", "white"))
+        self.list_label = ctk.CTkLabel(self.list_frame, text=self.text["strategies"], font=app_font(size=14, weight="bold"), text_color=("black", "white"))
         self.list_label.pack(pady=(10, 5))
         self.scroll_frame = ctk.CTkScrollableFrame(self.list_frame, fg_color="transparent", height=280)
         self.scroll_frame.pack(pady=5, padx=10, fill="both", expand=True)
-        
-        # Клик по пустому списку
-        self.scroll_frame.bind("<Button-1>", self.on_empty_click)
         
         self.load_strategies()
 
         self.settings_frame = ctk.CTkFrame(self, fg_color=("#1a1a2e", "#16213e"), corner_radius=15, border_width=2, border_color="#f39c12")
         self.settings_frame.pack(pady=10, padx=25, fill="x")
-        self.settings_label = ctk.CTkLabel(self.settings_frame, text=self.text["settings"], font=ctk.CTkFont(size=14, weight="bold"), text_color=("black", "white"))
+        self.settings_label = ctk.CTkLabel(self.settings_frame, text=self.text["settings"], font=app_font(size=14, weight="bold"), text_color=("black", "white"))
         self.settings_label.pack(pady=(8, 5))
-        self.settings_btn = ctk.CTkButton(self.settings_frame, text=self.text["open_settings"], command=self.open_settings, font=ctk.CTkFont(size=15, weight="bold"), height=45, corner_radius=10, fg_color="#2d3748", hover_color="#4a5568", border_width=1, border_color="#f39c12")
+        self.settings_btn = ctk.CTkButton(self.settings_frame, text=self.text["open_settings"], command=self.open_settings, font=app_font(size=15, weight="bold"), height=45, corner_radius=10, fg_color="#2d3748", hover_color="#4a5568", border_width=1, border_color="#f39c12")
         self.settings_btn.pack(pady=(5, 10), padx=15, fill="x")
 
         self.btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.btn_frame.pack(pady=5, padx=25, fill="x")
-        self.refresh_btn = ctk.CTkButton(self.btn_frame, text=self.text["refresh"], command=self.refresh_strategies, font=ctk.CTkFont(size=13, weight="bold"), height=35, corner_radius=10, fg_color="#4a5568", hover_color="#718096")
+        self.refresh_btn = ctk.CTkButton(self.btn_frame, text=self.text["refresh"], command=self.refresh_strategies, font=app_font(size=13, weight="bold"), height=35, corner_radius=10, fg_color="#4a5568", hover_color="#718096")
         self.refresh_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        self.remove_btn = ctk.CTkButton(self.btn_frame, text=self.text["remove"], command=self.remove_service, font=ctk.CTkFont(size=13, weight="bold"), height=35, corner_radius=10, fg_color="#e53e3e", hover_color="#c53030", state="disabled")
+        self.remove_btn = ctk.CTkButton(self.btn_frame, text=self.text["remove"], command=self.remove_service, font=app_font(size=13, weight="bold"), height=35, corner_radius=10, fg_color="#e53e3e", hover_color="#c53030", state="disabled")
         self.remove_btn.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         self.btn_frame.grid_columnconfigure(0, weight=1)
         self.btn_frame.grid_columnconfigure(1, weight=1)
 
-        self.footer_label = ctk.CTkLabel(self, text=f"{APP_PATH}", font=ctk.CTkFont(size=9), text_color=("black", "white"))
+        self.footer_label = ctk.CTkLabel(self, text=f"{APP_PATH}", font=app_font(size=9), text_color=("black", "white"))
         self.footer_label.pack(pady=(0, 10))
 
         self.after(1000, self.check_updates)
         self.after(500, self.check_status)
-
-    def on_empty_click(self, event):
-        """Обработка клика по пустому списку стратегий"""
-        if not self.strategies:
-            self.empty_clicks += 1
-            if self.empty_clicks >= 10:
-                self.empty_clicks = 0
-                self.play_video()
-
-    def play_video(self):
-        """Воспроизведение видео 0800.mp4"""
-        try:
-            video_path = os.path.join(BASE_PATH, "0800.mp4")
-            if not os.path.exists(video_path):
-                video_path = os.path.join(APP_PATH, "0800.mp4")
-            
-            if os.path.exists(video_path):
-                if sys.platform == "win32":
-                    os.startfile(video_path)
-                else:
-                    subprocess.Popen(['xdg-open', video_path])
-            else:
-                messagebox.showinfo("0800", "Видео не найдено!\nПоложи 0800.mp4 рядом с программой.")
-        except Exception as e:
-            print(f"Ошибка воспроизведения видео: {e}")
 
     def change_lang(self, choice):
         lang_map = {
@@ -664,7 +767,11 @@ class HuxHuxLauncher(ctk.CTk):
             self.update_state = "checking"
             self.ui(lambda: self.update_label.configure(text=self.text["update_check"], text_color="#f39c12"))
             try:
-                response = requests.get(GITHUB_API_URL, timeout=10)
+                response = requests.get(
+                    GITHUB_API_URL,
+                    timeout=10,
+                    headers={"User-Agent": "hux-huxLauncher"},
+                )
                 if response.status_code == 200:
                     data = response.json()
                     latest = data.get("tag_name", "").replace("v", "")
@@ -685,9 +792,11 @@ class HuxHuxLauncher(ctk.CTk):
                             self.update_btn.configure(text=self.text["check_updates"], fg_color="#2d3748", hover_color="#4a5568", command=self.check_updates)
                         ))
                 else:
+                    logger.warning("GitHub API вернул статус %s", response.status_code)
                     self.update_state = "error"
                     self.ui(lambda: self.update_label.configure(text=self.text["update_error"], text_color="#fc8181"))
-            except:
+            except Exception:
+                logger.exception("Ошибка при проверке обновлений")
                 self.update_state = "error2"
                 self.ui(lambda: self.update_label.configure(text=self.text["update_error2"], text_color="#fc8181"))
 
@@ -701,8 +810,8 @@ class HuxHuxLauncher(ctk.CTk):
     def get_all_bat_files(self):
         files = []
         try:
-            for f in os.listdir(APP_PATH):
-                full_path = os.path.join(APP_PATH, f)
+            for f in os.listdir(self.zapret_dir):
+                full_path = os.path.join(self.zapret_dir, f)
                 if os.path.isfile(full_path) and f.endswith('.bat') and f.lower() != 'service.bat':
                     files.append(f)
             def natural(name):
@@ -716,8 +825,8 @@ class HuxHuxLauncher(ctk.CTk):
                     return (1, natural(name))
                 return (2, natural(name))
             files.sort(key=sort_key)
-        except Exception as e:
-            print(f"Ошибка: {e}")
+        except Exception:
+            logger.exception("Ошибка при получении списка .bat файлов")
         return files
 
     def load_strategies(self):
@@ -725,14 +834,13 @@ class HuxHuxLauncher(ctk.CTk):
             widget.destroy()
         self.strategies = self.get_all_bat_files()
         if self.strategies:
-            self.empty_clicks = 0
             for name in self.strategies:
                 display_name = name.replace('.bat', '')
-                btn = ctk.CTkButton(self.scroll_frame, text=f"> {display_name}", command=lambda n=name: self.run_strategy(n), font=ctk.CTkFont(size=12), height=35, corner_radius=8, fg_color="#2d3748", hover_color="#00b894", anchor="w", border_width=1, border_color="#4a5568")
+                btn = ctk.CTkButton(self.scroll_frame, text=f"> {display_name}", command=lambda n=name: self.run_strategy(n), font=app_font(size=12), height=35, corner_radius=8, fg_color="#2d3748", hover_color="#00b894", anchor="w", border_width=1, border_color="#4a5568")
                 btn.pack(pady=2, padx=5, fill="x")
             self.list_label.configure(text=self.text["strategies_found"].format(len(self.strategies)))
         else:
-            label = ctk.CTkLabel(self.scroll_frame, text=self.text["no_strategies"].format(APP_PATH), font=ctk.CTkFont(size=13), text_color="#fc8181", justify="center")
+            label = ctk.CTkLabel(self.scroll_frame, text=self.text["no_strategies"].format(self.zapret_dir), font=app_font(size=13), text_color="#fc8181", justify="center")
             label.pack(pady=30)
             self.list_label.configure(text=self.text["strategies_not_found"])
 
@@ -747,15 +855,83 @@ class HuxHuxLauncher(ctk.CTk):
             script = os.path.abspath(sys.argv[0])
             ctypes.windll.shell32.ShellExecuteW(None, "runas", script, "", None, 1)
             self.destroy()
-            return
+            sys.exit(0)
         self.status_label.configure(text=f"Запуск: {name}...", text_color="#f39c12")
         try:
-            full_path = os.path.join(APP_PATH, name)
-            subprocess.Popen(f'start cmd /c "{full_path}"', cwd=APP_PATH, shell=True)
+            full_path = os.path.join(self.zapret_dir, name)
+            subprocess.Popen(
+                ["cmd", "/c", full_path],
+                cwd=self.zapret_dir,
+                creationflags=CREATE_NEW_CONSOLE,
+            )
             self.status_label.configure(text=f"Запущена: {name}", text_color="#48bb78")
             self.after(3000, self.check_status)
         except Exception as e:
+            logger.exception("Ошибка запуска стратегии %s", name)
             self.status_label.configure(text=f"Ошибка: {str(e)[:50]}", text_color="#fc8181")
+
+    def open_zapret_source_dialog(self):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(self.text["zapret_source_title"])
+        dialog.geometry("420x220")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.configure(fg_color=("#0a0a1a", "#0d0d2b"))
+
+        x = self.winfo_x() + (self.winfo_width() // 2) - 210
+        y = self.winfo_y() + (self.winfo_height() // 2) - 110
+        dialog.geometry(f"+{x}+{y}")
+
+        current_mode = self.settings.get("zapret_mode", "builtin")
+        current_custom = self.settings.get("zapret_custom_path", "")
+
+        label = ctk.CTkLabel(dialog, text=self.text["zapret_source_heading"], font=app_font(size=16, weight="bold"), text_color="#00d4ff")
+        label.pack(pady=(15, 10))
+
+        current_label = ctk.CTkLabel(
+            dialog,
+            text=self.text["zapret_source_current"].format(self.zapret_dir),
+            font=app_font(size=11),
+            text_color=("black", "white"),
+            wraplength=380,
+        )
+        current_label.pack(pady=(0, 15))
+
+        def use_builtin():
+            self.settings["zapret_mode"] = "builtin"
+            self.settings.pop("zapret_custom_path", None)
+            save_settings(self.settings)
+            self.zapret_dir = resolve_zapret_dir(self.settings)
+            unstage_zapret_files(self.zapret_dir)
+            self.load_strategies()
+            dialog.destroy()
+
+        def use_custom():
+            folder = filedialog.askdirectory(title=self.text["zapret_source_pick_folder"])
+            if not folder:
+                return
+            self.settings["zapret_mode"] = "custom"
+            self.settings["zapret_custom_path"] = folder
+            save_settings(self.settings)
+            self.zapret_dir = resolve_zapret_dir(self.settings)
+            unstage_zapret_files(self.zapret_dir)
+            self.load_strategies()
+            dialog.destroy()
+
+        builtin_btn = ctk.CTkButton(
+            dialog, text=("✅ " if current_mode != "custom" else "") + self.text["zapret_source_builtin"],
+            command=use_builtin, height=38, fg_color="#2d3748", hover_color="#00b894",
+            font=app_font(size=13),
+        )
+        builtin_btn.pack(pady=5, padx=30, fill="x")
+
+        custom_btn = ctk.CTkButton(
+            dialog, text=("✅ " if current_mode == "custom" else "") + self.text["zapret_source_custom"],
+            command=use_custom, height=38, fg_color="#2d3748", hover_color="#00b894",
+            font=app_font(size=13),
+        )
+        custom_btn.pack(pady=5, padx=30, fill="x")
 
     def open_settings(self):
         if not ctypes.windll.shell32.IsUserAnAdmin():
@@ -763,22 +939,31 @@ class HuxHuxLauncher(ctk.CTk):
             return
 
         try:
-            service_path = os.path.join(APP_PATH, "service.bat")
+            service_path = os.path.join(self.zapret_dir, "service.bat")
             if not os.path.exists(service_path):
-                messagebox.showerror("Ошибка", self.text["service_not_found"].format(APP_PATH))
+                messagebox.showerror("Ошибка", self.text["service_not_found"].format(self.zapret_dir))
                 return
 
-            subprocess.Popen(f'start cmd /c "{service_path}" admin', cwd=APP_PATH, shell=True)
+            subprocess.Popen(
+                ["cmd", "/c", service_path, "admin"],
+                cwd=self.zapret_dir,
+                creationflags=CREATE_NEW_CONSOLE,
+            )
 
             help_window = HelpWindow(self.lang)
             help_window.focus()
 
         except Exception as e:
+            logger.exception("Ошибка открытия настроек")
             messagebox.showerror("Ошибка", str(e))
 
     def check_status(self):
         try:
-            result = subprocess.run('sc query "zapret"', capture_output=True, text=True, shell=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+            result = subprocess.run(
+                ["sc", "query", "zapret"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
             if result.returncode == 0:
                 self.remove_btn.configure(state="normal")
                 if "RUNNING" in result.stdout:
@@ -788,8 +973,8 @@ class HuxHuxLauncher(ctk.CTk):
             else:
                 self.remove_btn.configure(state="disabled")
                 self.status_label.configure(text=self.text["status_not_installed"], text_color="#fc8181")
-        except:
-            pass
+        except Exception:
+            logger.exception("Ошибка проверки статуса сервиса zapret")
 
     def remove_service(self):
         if not messagebox.askyesno(self.text["remove_confirm"], self.text["remove_confirm_msg"]):
@@ -798,11 +983,14 @@ class HuxHuxLauncher(ctk.CTk):
             messagebox.showwarning(self.text["settings_admin"], self.text["settings_admin_msg"])
             return
         try:
-            subprocess.run('net stop zapret', capture_output=True, shell=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
-            subprocess.run('sc delete zapret', capture_output=True, shell=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(["net", "stop", "zapret"], capture_output=True, timeout=10,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(["sc", "delete", "zapret"], capture_output=True, timeout=10,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
             self.status_label.configure(text=self.text["status_removed"], text_color="#fc8181")
             self.after(1000, self.check_status)
         except Exception as e:
+            logger.exception("Ошибка удаления сервиса zapret")
             messagebox.showerror("Ошибка", str(e))
 
 if __name__ == "__main__":
@@ -819,7 +1007,7 @@ if __name__ == "__main__":
                 show_main()
                 return
             app.after(100, check_splash)
-        except:
+        except Exception:
             show_main()
     app.after(100, check_splash)
     app.mainloop()
