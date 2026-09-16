@@ -21,9 +21,16 @@ CURRENT_VERSION = "1.0.8"
 
 CREATE_NEW_CONSOLE = 0x00000010
 
+def get_appdata_dir():
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(base, "ky4ka_boroxla", "hux-huxLauncher")
+    except Exception:
+        return tempfile.gettempdir()
+
 def get_log_path():
     try:
-        return os.path.join(get_app_path(), "hux-launcher.log")
+        return os.path.join(get_appdata_dir(), "hux-launcher.log")
     except Exception:
         return os.path.join(tempfile.gettempdir(), "hux-launcher.log")
 
@@ -55,8 +62,9 @@ def get_base_path():
 
 APP_PATH = get_app_path()
 BASE_PATH = get_base_path()
+APPDATA_DIR = get_appdata_dir()
 BUILTIN_ZAPRET_DIR = os.path.join(BASE_PATH, "zapret")
-SETTINGS_PATH = os.path.join(APP_PATH, "hux-launcher-settings.json")
+SETTINGS_PATH = os.path.join(APPDATA_DIR, "hux-launcher-settings.json")
 
 CUSTOM_FONT_PATH = os.path.join(BASE_PATH, "fnt_dotumche.ttf")
 CUSTOM_FONT_FAMILY = None
@@ -88,7 +96,21 @@ def app_font(size=13, weight="normal"):
         return ctk.CTkFont(family=CUSTOM_FONT_FAMILY, size=size, weight=weight)
     return ctk.CTkFont(size=size, weight=weight)
 
+def migrate_old_settings():
+    if os.path.exists(SETTINGS_PATH):
+        return
+    old_path = os.path.join(APP_PATH, "hux-launcher-settings.json")
+    try:
+        if os.path.exists(old_path):
+            with open(old_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Ошибка миграции старых настроек")
+
 def load_settings():
+    migrate_old_settings()
     try:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -125,7 +147,7 @@ def unstage_zapret_files(zapret_dir):
         logger.exception("Ошибка восстановления файлов zapret из .dat")
 
 try:
-    _log_handler = logging.FileHandler(os.path.join(APP_PATH, "hux-launcher.log"), encoding="utf-8")
+    _log_handler = logging.FileHandler(os.path.join(APPDATA_DIR, "hux-launcher.log"), encoding="utf-8")
     _log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(_log_handler)
 except Exception:
@@ -807,6 +829,22 @@ class HuxHuxLauncher(ctk.CTk):
             if messagebox.askyesno(self.text["update_available_title"], self.text["update_available_msg"].format(self.latest_version)):
                 webbrowser.open(self.download_url)
 
+    def get_favorites(self):
+        return self.settings.get("favorites", [])
+
+    def is_favorite(self, name):
+        return name in self.get_favorites()
+
+    def toggle_favorite(self, name):
+        favorites = self.get_favorites()
+        if name in favorites:
+            favorites.remove(name)
+        else:
+            favorites.append(name)
+        self.settings["favorites"] = favorites
+        save_settings(self.settings)
+        self.load_strategies()
+
     def get_all_bat_files(self):
         files = []
         try:
@@ -817,13 +855,16 @@ class HuxHuxLauncher(ctk.CTk):
             def natural(name):
                 return re.sub(r'\d+', lambda m: m.group().zfill(10), name)
 
+            favorites = self.get_favorites()
+
             def sort_key(x):
                 name = x.lower()
+                fav = 0 if x in favorites else 1
                 if name == 'general.bat':
-                    return (0, '')
+                    return (fav, 0, '')
                 if name.startswith('general ('):
-                    return (1, natural(name))
-                return (2, natural(name))
+                    return (fav, 1, natural(name))
+                return (fav, 2, natural(name))
             files.sort(key=sort_key)
         except Exception:
             logger.exception("Ошибка при получении списка .bat файлов")
@@ -836,8 +877,23 @@ class HuxHuxLauncher(ctk.CTk):
         if self.strategies:
             for name in self.strategies:
                 display_name = name.replace('.bat', '')
-                btn = ctk.CTkButton(self.scroll_frame, text=f"> {display_name}", command=lambda n=name: self.run_strategy(n), font=app_font(size=12), height=35, corner_radius=8, fg_color="#2d3748", hover_color="#00b894", anchor="w", border_width=1, border_color="#4a5568")
-                btn.pack(pady=2, padx=5, fill="x")
+                row = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
+                row.pack(pady=2, padx=5, fill="x")
+                row.grid_columnconfigure(0, weight=1)
+
+                favorited = self.is_favorite(name)
+                btn = ctk.CTkButton(row, text=f"> {display_name}", command=lambda n=name: self.run_strategy(n), font=app_font(size=12), height=35, corner_radius=8, fg_color="#2d3748", hover_color="#00b894", anchor="w", border_width=1, border_color="#4a5568")
+                btn.grid(row=0, column=0, sticky="ew")
+
+                star_btn = ctk.CTkButton(
+                    row, text="★" if favorited else "☆",
+                    command=lambda n=name: self.toggle_favorite(n),
+                    width=35, height=35, corner_radius=8,
+                    fg_color="#2d3748", hover_color="#4a5568",
+                    text_color="#f39c12" if favorited else "#a0aec0",
+                    font=app_font(size=14, weight="bold"),
+                )
+                star_btn.grid(row=0, column=1, padx=(5, 0))
             self.list_label.configure(text=self.text["strategies_found"].format(len(self.strategies)))
         else:
             label = ctk.CTkLabel(self.scroll_frame, text=self.text["no_strategies"].format(self.zapret_dir), font=app_font(size=13), text_color="#fc8181", justify="center")
